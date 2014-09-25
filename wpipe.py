@@ -31,7 +31,7 @@ class Mode:
     SingleTransaction = 4
 
 class Base:
-    def readerentry(self, nph, client, mode):
+    def readerentry(self, nph, client, mode, server):
         rq = client.rq
         wq = client.wq
 
@@ -65,6 +65,9 @@ class Base:
             cnt = struct.unpack('I', cnt)[0]
             rawmsg = buf[0:cnt]
             rq.put(rawmsg)
+
+            if server is not None:
+                server.hasdata = True
 
             '''
                 In slave mode we wait after reading so that we may be able
@@ -136,7 +139,6 @@ class ServerClient:
             raise Exception('This pipe is in read mode!')
         if self.mode == Mode.Slave and not self.rlock.acquire(blocking = False):
             raise Exception('The pipe is currently being read!')
-
         if self.mode == Mode.Master and not self.rlock.acquire(blocking = False):
             raise Exception('Master mode must wait for slave reply!')
 
@@ -193,7 +195,7 @@ class Client(Base):
         self.client = ServerClient(self.handle, self.mode, self.maxmessagesz)
 
         if self.mode != Mode.Writer:
-            thread = threading.Thread(target = self.readerentry, args = (self.handle, self.client, self.mode))
+            thread = threading.Thread(target = self.readerentry, args = (self.handle, self.client, self.mode, None))
             thread.start()
 
         if self.mode != Mode.Reader:
@@ -225,6 +227,7 @@ class Server(Base):
         self.shutdown = False
         self.t = threading.Thread(target = self.serverentry)
         self.t.start()
+        self.hasdata = False
 
     def dropdeadclients(self):
         toremove = []
@@ -251,6 +254,19 @@ class Server(Base):
 
     def shutdown(self):
         self.shutdown = True
+
+    def waitfordata(self, timeout = None, interval = 0.01):
+        if self.hasdata:
+            self.hasdata = False
+            return True
+
+        st = time.time()
+        while not self.hasdata:
+            if timeout is not None and time.time() - st > timeout:
+                return False
+            time.sleep(interval)
+        self.hasdata = False
+        return True
 
     def serverentry(self):
         while not self.shutdown:
@@ -287,7 +303,7 @@ class Server(Base):
             client = ServerClient(nph, self.mode, self.maxmessagesz)
 
             if self.mode != Mode.Writer:
-                thread = threading.Thread(target = self.readerentry, args = (nph, client, self.mode))
+                thread = threading.Thread(target = self.readerentry, args = (nph, client, self.mode, self))
                 thread.start()
 
             if self.mode != Mode.Reader:
