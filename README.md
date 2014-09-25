@@ -26,6 +26,7 @@ The server code:
                 rawmsg = client.read()
                 client.write(b'hallo')    
         pserver.waitfordata()
+    pserver.shutdown()
 
 The client code:
 
@@ -33,10 +34,13 @@ The client code:
     while True:
         pclient.write(b'hello')
         reply = pclient.read()
+    pclient.close()
 
 The client blocks on `pclient.read` but you can perform a non-blocking operation by
 using `pclient.canread` before. The server client items are removed if the pipe is
-dead and not data can be read so they will not be iterated over.
+dead and no data can be read, so they will not be iterated over. For example if the
+client sent some data and then closed the connection the server could still read
+the data but any future reads would throw an exception.
 
 In master and slave mode a single write or read is allowed before performing the
 opposite operation. The master writes a message and is then expected to read one
