@@ -3,6 +3,7 @@ import threading
 import queue
 import struct
 import time
+import sys
 
 hk32 = ctypes.windll.LoadLibrary('kernel32.dll')
 
@@ -14,6 +15,13 @@ PIPE_READMODE_MESSAGE =                 0x00000002
 OPEN_EXISTING =                         0x00000003
 GENERIC_READ =                          0x80000000
 GENERIC_WRITE =                         0x40000000
+
+if sys.maxsize > 2**32:
+    def ctypes_handle(handle):
+        return ctypes.c_ulonglong(handle)
+else:
+    def ctypes_handle(handle):
+        return ctypes.c_uint(handle)
 
 class Mode:
     Master =            0
@@ -41,10 +49,11 @@ class Base:
                 with client.rwait:
                     client.rwait.wait()
 
+            print('READING')
             cnt = b'\x00\x00\x00\x00'
             with client.rlock:
                 ret = hk32['ReadFile'](
-                    ctypes.c_ulonglong(nph), buf, 4096, ctypes.c_char_p(cnt), 0
+                    ctypes_handle(nph), buf, 4096, ctypes.c_char_p(cnt), 0
                 )
 
             if ret == 0:
@@ -56,7 +65,6 @@ class Base:
             cnt = struct.unpack('I', cnt)[0]
             rawmsg = buf[0:cnt]
             rq.put(rawmsg)
-            print('read', rawmsg)
 
             '''
                 In slave mode we wait after reading so that we may be able
@@ -70,7 +78,6 @@ class Base:
     def writerentry(self, nph, client, mode):
         wq = client.wq
 
-        print('writer start')
         while True:
             rawmsg = wq.get()
             if rawmsg is None:
@@ -78,16 +85,12 @@ class Base:
 
             written = b'\x00\x00\x00\x00'
 
-            print('writing %s' % rawmsg)
-
             ret = hk32['WriteFile'](
-                ctypes.c_ulonglong(nph), ctypes.c_char_p(rawmsg), 
+                ctypes_handle(nph), ctypes.c_char_p(rawmsg), 
                 ctypes.c_uint(len(rawmsg)), 
                 ctypes.c_char_p(written),
                 ctypes.c_uint(0)
             )
-
-            print('wrote ret:%s;' % (ret))
 
             if ret == 0:
                 self.alive = False        # signal the pipe has closed
@@ -118,7 +121,8 @@ class ServerClient:
             self.rwait.notify()
 
     def read(self):
-        if not self.alive:
+        # only throw exception if no data can be read
+        if not self.alive and not self.canread():
             raise Exception('Pipe is dead!')
         if self.mode == Mode.Writer:
             raise Exception('This pipe is in write mode!')
@@ -133,20 +137,22 @@ class ServerClient:
         if self.mode == Mode.Slave and not self.rlock.acquire(blocking = False):
             raise Exception('The pipe is currently being read!')
 
+        if self.mode == Mode.Master and not self.rlock.acquire(blocking = False):
+            raise Exception('Master mode must wait for slave reply!')
+
         self.wq.put(message)
 
         # we must have held the lock to be here if we
-        # are a slave.. so release it
-        if self.mode == Mode.Slave:
+        # are a slave or master.. so release it
+        if self.mode == Mode.Slave or self.mode == Mode.Master:
             self.rlock.release()
         return True
 
     def canread(self):
-        print('self.rq.empty', self.rq.empty())
         return not self.rq.empty()
 
     def close(self):
-        hk32['CloseHandle'](ctypes.c_ulonglong(self.handle))
+        hk32['CloseHandle'](ctypes_handle(self.handle))
 
 class Client(Base):
     def __init__(self, name, mode, *, maxmessagesz = 4096):
@@ -163,7 +169,6 @@ class Client(Base):
             0                       # no template file
         )
 
-        print('self.handle', self.handle)
 
         if hk32['GetLastError']() != 0:
             err = hk32['GetLastError']()
@@ -173,7 +178,7 @@ class Client(Base):
 
         xmode = struct.pack('I', PIPE_READMODE_MESSAGE)
         ret = hk32['SetNamedPipeHandleState'](
-            ctypes.c_ulonglong(self.handle),
+            ctypes_handle(self.handle),
             ctypes.c_char_p(xmode),
             ctypes.c_uint(0),
             ctypes.c_uint(0)
@@ -181,8 +186,8 @@ class Client(Base):
 
         if ret == 0:
             err = hk32['GetLastError']()
-            print('err', err)
             self.alive = False
+            raise Exception('Pipe Set Mode Failed [%s]' % err)
             return
 
         self.client = ServerClient(self.handle, self.mode, self.maxmessagesz)
@@ -199,11 +204,9 @@ class Client(Base):
         return
 
     def close(self):
-        hk32['CloseHandle'](ctypes.c_ulonglong(self.handle))
+        hk32['CloseHandle'](ctypes_handle(self.handle))
 
     def read(self):
-        if not self.alive:
-            raise Exception('Pipe Not Alive')
         return self.client.read()
 
     def write(self, message):
@@ -273,10 +276,6 @@ class Server(Base):
             if err == 231:
                 time.sleep(2)
                 continue
-
-            print('err', err)
-
-            print('nph', nph)
 
             # wait for connection
             err = hk32['ConnectNamedPipe'](ctypes.c_uint(nph), ctypes.c_uint(0))
