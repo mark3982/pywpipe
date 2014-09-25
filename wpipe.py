@@ -30,6 +30,19 @@ class Mode:
     Writer =            3
     SingleTransaction = 4
 
+    def is_slave(mode):
+        return mode & 3 == Mode.Slave
+    def is_master(mode):
+        return mode & 3 == Mode.Master
+    def is_reader(mode):
+        return mode & 3 == Mode.Reader
+    def is_writer(mode):
+        return mode & 3 == Mode.Writer
+    def is_strans(mode):
+        #return mode & Mode.SingleTransaction == Mode.SingleTransaction
+        return True
+
+
 class Base:
     def readerentry(self, nph, client, mode, server):
         rq = client.rq
@@ -66,6 +79,8 @@ class Base:
             rawmsg = buf[0:cnt]
             rq.put(rawmsg)
 
+            client.pendingread = False
+
             if server is not None:
                 server.hasdata = True
 
@@ -74,7 +89,7 @@ class Base:
                 to write a reply if needed. If we never need any replies
                 then we should be using Mode.Reader instead of Mode.Slave.
             '''
-            if mode == Mode.Slave:
+            if Mode.is_slave(mode):
                 with client.rwait:
                     client.rwait.wait()
 
@@ -100,7 +115,7 @@ class Base:
                 client.rq.put(None)       # signal the pipe has closed
                 return
 
-            if mode | Mode.SingleTransaction:
+            if (Mode.is_slave(mode) or Mode.is_master(mode)) and Mode.is_strans(mode):
                 client.endtransaction()
 
 
@@ -112,8 +127,19 @@ class ServerClient:
         self.alive = True
         self.mode = mode
         self.maxmessagesz = maxmessagesz
+        '''
+
+        '''
         self.rwait = threading.Condition()
-        self.readingnow = False
+        '''
+            The `pendingread` serves to prevent you from writing 
+            again before getting a reply.
+        '''
+        self.pendingread = False
+        '''
+            The `rlock` serves to prevents you from issuing a write
+            while a read operation is blocking.
+        '''
         self.rlock = threading.Lock()
 
     def isalive(self):
@@ -127,7 +153,7 @@ class ServerClient:
         # only throw exception if no data can be read
         if not self.alive and not self.canread():
             raise Exception('Pipe is dead!')
-        if self.mode == Mode.Writer:
+        if Mode.is_writer(self.mode):
             raise Exception('This pipe is in write mode!')
 
         return self.rq.get()
@@ -135,18 +161,16 @@ class ServerClient:
     def write(self, message):
         if not self.alive:
             raise Exception('Pipe is dead!')
-        if self.mode == Mode.Reader:
+        if Mode.is_reader(self.mode):
             raise Exception('This pipe is in read mode!')
-        if self.mode == Mode.Slave and not self.rlock.acquire(blocking = False):
+        if Mode.is_slave(self.mode) and not self.rlock.acquire(blocking = False):
             raise Exception('The pipe is currently being read!')
-        if self.mode == Mode.Master and not self.rlock.acquire(blocking = False):
+        if Mode.is_master(self.mode) and self.pendingread:
             raise Exception('Master mode must wait for slave reply!')
 
+        self.pendingread = True
         self.wq.put(message)
-
-        # we must have held the lock to be here if we
-        # are a slave or master.. so release it
-        if self.mode == Mode.Slave or self.mode == Mode.Master:
+        if Mode.is_slave(self.mode):
             self.rlock.release()
         return True
 
@@ -194,16 +218,19 @@ class Client(Base):
 
         self.client = ServerClient(self.handle, self.mode, self.maxmessagesz)
 
-        if self.mode != Mode.Writer:
+        if not Mode.is_writer(self.mode):
             thread = threading.Thread(target = self.readerentry, args = (self.handle, self.client, self.mode, None))
             thread.start()
 
-        if self.mode != Mode.Reader:
+        if not Mode.is_reader(self.mode):
             thread = threading.Thread(target = self.writerentry, args = (self.handle, self.client, self.mode))
             thread.start()
 
         self.alive = True
         return
+
+    def endtransaction(self):
+        self.client.endtransaction()
 
     def close(self):
         hk32['CloseHandle'](ctypes_handle(self.handle))
@@ -232,7 +259,7 @@ class Server(Base):
     def dropdeadclients(self):
         toremove = []
         for client in self.clients:
-            if not client.alive:
+            if not client.alive and not client.canread():
                 toremove.append(client)
         for client in toremove:
             client.close()
