@@ -10,6 +10,8 @@ API
     wpipe.Server(name, mode, *, maxclients = 5, maxmessagesz = 4096, maxtime = 100):
     wpipe.Client(name, mode, *, maxmessagesz = 4096)
 
+
+
 Examples
 =====
 
@@ -19,7 +21,7 @@ An example of a master and slave pipe mode.
 
 The server code:
 
-    pserver = wpipe.Server('darkguard', pipe.Mode.Slave)
+    pserver = wpipe.Server('mypipe', wpipe.Mode.Slave)
     while True:
         for client in pserver:
             while client.canread():
@@ -30,7 +32,7 @@ The server code:
 
 The client code:
 
-    pclient = wpipe.Client('darkguard', pipe.Mode.Master)
+    pclient = wpipe.Client('mypipe', wpipe.Mode.Master)
     while True:
         pclient.write(b'hello')
         reply = pclient.read()

@@ -62,7 +62,6 @@ class Base:
                 with client.rwait:
                     client.rwait.wait()
 
-            print('READING')
             cnt = b'\x00\x00\x00\x00'
             with client.rlock:
                 ret = hk32['ReadFile'](
