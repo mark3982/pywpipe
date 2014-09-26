@@ -51,3 +51,7 @@ message, and the slave reads one message and is expected to write one message.
 You may notice the server is placed into slave mode and the client into master which
 may seem backwards however in some cases this is desired and useful. You could place
 the server into master mode and the client into slave mode.    
+
+Also `Mode.Reader` and `Mode.Writer` are supported making the pipe essentially
+uni-directional. I may in a future release tweak this to possibly allow a association
+method to tie together two pipes in this mode connected to a server.
